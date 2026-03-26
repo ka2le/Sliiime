@@ -1,36 +1,38 @@
+import { canUnlockNode } from './tree'
+
 export const STAT_DEFS = [
   {
     key: 'bloom',
     name: 'Bloom',
-    description: 'How quickly the colony creates new mass.',
+    description: 'Creates new mass and fuels long growth chains.',
     min: 0,
     max: 10,
   },
   {
     key: 'drift',
     name: 'Drift',
-    description: 'How readily the colony spreads into open cells.',
+    description: 'Pushes cells into open terrain and better angles.',
     min: 0,
     max: 10,
   },
   {
     key: 'rupture',
     name: 'Rupture',
-    description: 'Offensive force when pushing into enemy territory.',
+    description: 'Turns committed mass into violent tile captures.',
     min: 0,
     max: 10,
   },
   {
     key: 'shell',
     name: 'Shell',
-    description: 'Durability when holding contested space.',
+    description: 'Lets colonies keep territory under pressure.',
     min: 0,
     max: 10,
   },
   {
     key: 'synapse',
     name: 'Synapse',
-    description: 'How much nearby cells coordinate and reinforce each other.',
+    description: 'Rewards tight formations with stronger support.',
     min: 0,
     max: 10,
   },
@@ -40,78 +42,91 @@ export const PRESETS = [
   {
     id: 'balanced',
     label: 'Balanced Mesh',
-    stats: { bloom: 4, drift: 4, rupture: 4, shell: 4, synapse: 4 },
-    mutations: ['reinforced-membrane'],
+    stats: { bloom: 4, drift: 4, rupture: 4, shell: 3, synapse: 3 },
+    nodes: ['reinforced-membrane', 'soft-division'],
   },
   {
     id: 'swarm',
     label: 'Swarm Bloom',
-    stats: { bloom: 7, drift: 7, rupture: 3, shell: 1, synapse: 2 },
-    mutations: ['rapid-mitosis', 'empty-lure'],
+    stats: { bloom: 6, drift: 6, rupture: 2, shell: 2, synapse: 2 },
+    nodes: ['soft-division', 'frontier-sense'],
   },
   {
     id: 'bulwark',
     label: 'Bulwark Colony',
-    stats: { bloom: 2, drift: 1, rupture: 4, shell: 7, synapse: 6 },
-    mutations: ['reinforced-membrane', 'linked-nodes'],
-  },
-]
-
-export const MUTATIONS = [
-  {
-    id: 'rapid-mitosis',
-    name: 'Rapid Mitosis',
-    description: '+1 growth on each reinforce action.',
-  },
-  {
-    id: 'empty-lure',
-    name: 'Empty Lure',
-    description: 'Expansion into empty cells gets bonus force.',
-  },
-  {
-    id: 'reinforced-membrane',
-    name: 'Reinforced Membrane',
-    description: 'Occupied cells lose less mass in clashes.',
-  },
-  {
-    id: 'linked-nodes',
-    name: 'Linked Nodes',
-    description: 'Adjacent friendly cells provide stronger support.',
-  },
-  {
-    id: 'predator-spines',
-    name: 'Predator Spines',
-    description: 'Successful invasions retain extra surviving mass.',
-  },
-  {
-    id: 'fractal-splitting',
-    name: 'Fractal Splitting',
-    description: 'High-mass cells are more willing to divide.',
+    stats: { bloom: 2, drift: 2, rupture: 3, shell: 6, synapse: 5 },
+    nodes: ['reinforced-membrane', 'braced-core'],
   },
 ]
 
 export function createInitialDraft() {
   return {
     stats: {
-      bloom: 4,
-      drift: 4,
-      rupture: 4,
-      shell: 4,
-      synapse: 4,
+      bloom: 2,
+      drift: 2,
+      rupture: 2,
+      shell: 2,
+      synapse: 2,
     },
-    mutations: ['reinforced-membrane'],
+    nodes: [],
   }
 }
 
-export function applyDraftPreset(current, presetId) {
-  const preset = PRESETS.find((entry) => entry.id === presetId)
+export function getAllocatedStatPoints(draft) {
+  return Object.values(draft.stats).reduce((sum, value) => sum + (value - 2), 0)
+}
 
-  if (!preset) {
-    return current
+export function getRemainingStatPoints(draft, run) {
+  return run.statPoints - getAllocatedStatPoints(draft)
+}
+
+export function setDraftStat(draft, run, key, value) {
+  const nextValue = Math.max(0, Math.min(10, value))
+  const currentValue = draft.stats[key]
+  const diff = nextValue - currentValue
+  const remaining = getRemainingStatPoints(draft, run)
+
+  if (diff > remaining) {
+    return draft
   }
 
   return {
-    stats: { ...preset.stats },
-    mutations: [...preset.mutations],
+    ...draft,
+    stats: {
+      ...draft.stats,
+      [key]: nextValue,
+    },
   }
+}
+
+export function tryUnlockNode(draft, run, nodeId) {
+  if (!canUnlockNode(draft.nodes, run.genomePoints - draft.nodes.length, nodeId)) {
+    return draft
+  }
+
+  return {
+    ...draft,
+    nodes: [...draft.nodes, nodeId],
+  }
+}
+
+export function applyDraftPreset(current, presetId, run) {
+  const preset = PRESETS.find((entry) => entry.id === presetId)
+
+  if (!preset) return current
+
+  const next = {
+    stats: { ...preset.stats },
+    nodes: [...preset.nodes],
+  }
+
+  if (getRemainingStatPoints(next, run) < 0) {
+    return current
+  }
+
+  if (next.nodes.length > run.genomePoints) {
+    return current
+  }
+
+  return next
 }

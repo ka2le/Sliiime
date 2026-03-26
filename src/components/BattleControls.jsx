@@ -1,5 +1,4 @@
 export function BattleControls({
-  encounter,
   summary,
   isRunning,
   tickMs,
@@ -7,52 +6,34 @@ export function BattleControls({
   onToggleRunning,
   onSetTickMs,
   onStep,
-  onRun,
-  onResetBoard,
-  onResetAll,
-  onBringChallenger,
+  onResetBattle,
+  onClaimBattle,
 }) {
   return (
-    <section className="panel controls-panel">
-      <div>
-        <div className="panel-title-row">
-          <h2>Battle sandbox</h2>
-          <span className="chip">{encounter.id}</span>
-        </div>
-        <p className="muted">{encounter.description}</p>
-      </div>
-
-      <div className="summary-row">
+    <section className="stage-actions">
+      <div className="run-summary-strip arena-strip">
         <div>
-          <span className="label">your mass</span>
-          <strong>{summary.playerMass}</strong>
+          <span className="label">your score</span>
+          <strong>{summary.playerScore}</strong>
         </div>
         <div>
-          <span className="label">enemy mass</span>
-          <strong>{summary.enemyMass}</strong>
-        </div>
-        <div>
-          <span className="label">territory</span>
-          <strong>
-            {summary.playerCells} / {summary.enemyCells}
-          </strong>
+          <span className="label">enemy score</span>
+          <strong>{summary.enemyScore}</strong>
         </div>
         <div>
           <span className="label">sim</span>
-          <strong>{isRunning ? 'Running' : 'Paused'}</strong>
+          <strong>{summary.finished ? 'done' : isRunning ? 'running' : 'paused'}</strong>
         </div>
       </div>
 
-      <div className="button-row">
-        <button type="button" onClick={onToggleRunning}>{isRunning ? 'Pause' : 'Play'}</button>
-        <button type="button" onClick={onStep}>Step +1</button>
-        <button type="button" onClick={onRun}>Run +12</button>
-        <button type="button" onClick={onResetBoard}>Reset board</button>
-        <button type="button" onClick={onBringChallenger}>Bring in challenger</button>
-        <button type="button" className="ghost" onClick={onResetAll}>Reset everything</button>
+      <div className="button-row centered">
+        {!summary.finished ? <button type="button" onClick={onToggleRunning}>{isRunning ? 'Pause' : 'Play'}</button> : null}
+        {!summary.finished ? <button type="button" onClick={onStep}>Step</button> : null}
+        <button type="button" className="ghost" onClick={onResetBattle}>Restart battle</button>
+        {summary.finished ? <button type="button" onClick={onClaimBattle}>Resolve battle</button> : null}
       </div>
 
-      <div className="speed-row">
+      <div className="speed-row centered-speed">
         <span className="label">tick speed</span>
         <div className="speed-options">
           {speedOptions.map((speed) => (

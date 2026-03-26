@@ -4,14 +4,9 @@ function getCellClass(cell) {
   return 'grid-cell empty'
 }
 
-export function BattleGrid({ state }) {
+export function BattleGrid({ state, mode }) {
   return (
-    <section className="panel grid-panel">
-      <div className="panel-title-row">
-        <h2>Growth field</h2>
-        <span className="chip">8×8</span>
-      </div>
-
+    <section className="grid-panel">
       <div className="grid-wrap" role="img" aria-label="Simulation grid">
         {state.grid.flat().map((cell) => (
           <div key={`${cell.x}-${cell.y}`} className={getCellClass(cell)}>
@@ -21,7 +16,7 @@ export function BattleGrid({ state }) {
             {cell.owner ? (
               <>
                 <div className="cell-mass">{cell.mass}</div>
-                <div className="cell-action">{cell.lastAction ?? 'hold'}</div>
+                <div className="cell-action">{cell.lastAction ?? (mode === 'arena' ? 'hold' : 'preview')}</div>
               </>
             ) : (
               <div className="cell-empty-dot" />

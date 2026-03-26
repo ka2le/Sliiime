@@ -1,12 +1,14 @@
 import { PRESETS, STAT_DEFS } from '../game/draft'
 
-export function StatsPanel({ draft, onSetStat, onApplyPreset }) {
+export function StatsPanel({ draft, run, remainingStatPoints, onSetStat, onApplyPreset }) {
   return (
     <section className="panel side-panel">
       <div className="panel-title-row">
         <h2>Strain stats</h2>
-        <span className="chip">live</span>
+        <span className="chip">{remainingStatPoints} free</span>
       </div>
+
+      <p className="muted">Base stats start at 2. Spend carefully or lean into one branch hard.</p>
 
       <div className="preset-row">
         {PRESETS.map((preset) => (
@@ -35,6 +37,12 @@ export function StatsPanel({ draft, onSetStat, onApplyPreset }) {
             />
           </label>
         ))}
+      </div>
+
+      <div className="result-card compact">
+        <span className="label">run pacing</span>
+        <strong>Level {run.level}</strong>
+        <p className="muted">Each win grants +1 stat point and +1 genome point.</p>
       </div>
     </section>
   )

@@ -14,8 +14,9 @@ A quick-play alien colony auto-battler where the player designs a slime strain a
 Get the core grid simulation feeling good enough that different stat distributions and mutation sets visibly behave differently.
 
 ## Immediate tasks
-- Sharpen simulation rules and action priorities
-- Add autoplay / pause controls
-- Add clearer battle feedback
-- Replace placeholder mutation list with a proper progression structure
-- Improve visual juice of cell actions
+- Finalize planning docs for game loop, balance, skill tree, and UI
+- Split the app into Workshop and Arena modes
+- Add battle hard-cap and timeout scoring
+- Replace placeholder mutation list with a real branching skill tree
+- Build a level/progression loop around battles
+- Improve visual juice and clarity of cell actions
