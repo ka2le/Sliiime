@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { BattleGrid } from './components/BattleGrid'
 import { TopBar } from './components/TopBar'
@@ -7,20 +7,20 @@ import { SkillTreePanel } from './components/SkillTreePanel'
 import { BattleControls } from './components/BattleControls'
 import { createInitialDraft, applyDraftPreset } from './game/draft'
 import { createEncounter, getNextEncounterIndex } from './game/encounters'
-import { createSimulationState, advanceSimulation, summarizeState } from './game/simulation'
+import { createSimulationState, summarizeState } from './game/simulation'
 
 const TABS = ['overview', 'stats', 'mutations']
+const SPEED_OPTIONS = [200, 400, 700, 1000]
 
 function App() {
   const [draft, setDraft] = useState(() => createInitialDraft())
   const [encounterIndex, setEncounterIndex] = useState(0)
   const [tick, setTick] = useState(0)
   const [activeTab, setActiveTab] = useState('overview')
+  const [isRunning, setIsRunning] = useState(true)
+  const [tickMs, setTickMs] = useState(400)
 
-  const encounter = useMemo(
-    () => createEncounter(encounterIndex),
-    [encounterIndex],
-  )
+  const encounter = useMemo(() => createEncounter(encounterIndex), [encounterIndex])
 
   const simulation = useMemo(
     () => createSimulationState({ draft, encounter, tick }),
@@ -28,6 +28,22 @@ function App() {
   )
 
   const summary = useMemo(() => summarizeState(simulation), [simulation])
+
+  useEffect(() => {
+    if (!isRunning) return undefined
+
+    const intervalId = window.setInterval(() => {
+      setTick((current) => current + 1)
+    }, tickMs)
+
+    return () => window.clearInterval(intervalId)
+  }, [isRunning, tickMs, draft, encounterIndex])
+
+  useEffect(() => {
+    if (summary.finished) {
+      setIsRunning(false)
+    }
+  }, [summary.finished])
 
   const handleStep = () => {
     setTick((current) => current + 1)
@@ -39,17 +55,20 @@ function App() {
 
   const handleResetBoard = () => {
     setTick(0)
+    setIsRunning(true)
   }
 
   const handleResetAll = () => {
     setDraft(createInitialDraft())
     setEncounterIndex(0)
     setTick(0)
+    setIsRunning(true)
   }
 
   const handleBringChallenger = () => {
     setEncounterIndex((current) => getNextEncounterIndex(current))
     setTick(0)
+    setIsRunning(true)
   }
 
   const handleSetStat = (key, value) => {
@@ -61,6 +80,7 @@ function App() {
       },
     }))
     setTick(0)
+    setIsRunning(true)
   }
 
   const handleToggleMutation = (mutationId) => {
@@ -75,11 +95,13 @@ function App() {
       }
     })
     setTick(0)
+    setIsRunning(true)
   }
 
   const handleApplyPreset = (presetId) => {
     setDraft((current) => applyDraftPreset(current, presetId))
     setTick(0)
+    setIsRunning(true)
   }
 
   return (
@@ -110,6 +132,11 @@ function App() {
           <BattleControls
             encounter={encounter}
             summary={summary}
+            isRunning={isRunning}
+            tickMs={tickMs}
+            speedOptions={SPEED_OPTIONS}
+            onToggleRunning={() => setIsRunning((current) => !current)}
+            onSetTickMs={setTickMs}
             onStep={handleStep}
             onRun={handleRun}
             onResetBoard={handleResetBoard}
