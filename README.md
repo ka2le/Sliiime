@@ -5,27 +5,66 @@ Alien colony evolution auto-battler prototype.
 ## Current prototype
 
 - React + Vite app
-- 8x8 grid simulation
-- player strain stat sliders
-- mutation toggles
-- sandbox mode + rotating challengers
-- responsive layout: side-by-side on desktop, tabbed on smaller screens
+- 7x7 slime battle grid
+- slime-first board UI
+- attack / growth upgrades directly in the main board view
+- graph-style skill tree popup with ranked nodes
+- longer encounter ladder with neutral terrain blockers
+- animated spread / combat feedback with floating numbers
+- centralized gameplay tuning in `src/game/GameBalance.json`
 
-## Design direction
+## Core gameplay
 
-The core fantasy is **designing a strange alien slime strain** and watching it spread, reinforce, contest, and evolve on a grid. The interesting part is buildcraft, not manual battle input.
+The intended flow is:
 
-## Planned sections
+1. grow a dense blob
+2. choose when to spread
+3. commit large cells into attacks
+4. evolve into stronger branch identities through the skill tree
 
-- Top bar / run info
-- Main battle grid
-- Stats view
-- Mutation / skill tree view
-- Later: run progression, better enemy roster, post-battle analysis, visuals/animation polish
+The battle model currently emphasizes:
+
+- **growth first**: larger cells grow faster
+- **expensive spread**: spreading costs setup and sends only a small payload
+- **committed attacks**: attacking consumes most of a cell and creates battle zones
+- **defender advantage**: defenders get a base shield edge
+
+## Important files
+
+- `src/game/GameBalance.json` — main balance/tuning values
+- `src/game/simulation.js` — battle simulation
+- `src/game/encounters.js` — enemy ladder + terrain layouts
+- `src/game/tree.js` — skill tree nodes
+- `src/GamePrototype.jsx` — main prototype UI
+
+## Tweaking balance
+
+If you want to tune the game without digging through logic first, start with:
+
+- `defaultSpreadBias`
+- `baseShield`
+- `baseCellCap`
+- `spreadCost`
+- `spreadSpawn`
+- `attackCost`
+- `battleTickLimit`
+- the values under `ai`
 
 ## Run locally
 
 ```bash
 npm install
 npm run dev
+```
+
+## Build
+
+```bash
+npm run build
+```
+
+## Deploy to GitHub Pages
+
+```bash
+npm run deploy
 ```

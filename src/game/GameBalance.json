@@ -1,0 +1,64 @@
+{
+  "gridSize": 7,
+  "startingStatPoints": 2,
+  "battleTickLimit": 42,
+  "maxLevel": 10,
+  "baseShield": 5,
+  "baseCellCap": 50,
+  "spreadCost": 5,
+  "spreadSpawn": 1,
+  "attackCost": 5,
+  "defaultSpreadBias": 75,
+  "playerStartCells": [
+    { "x": 1, "y": 5, "mass": 12, "shield": 5 },
+    { "x": 2, "y": 5, "mass": 8, "shield": 5 }
+  ],
+  "enemySeedMass": {
+    "tinyCluster": [8],
+    "diagonalPair": [8, 6],
+    "heavyCore": [16, 8],
+    "wideLine": [8, 8, 6],
+    "doubleLine": [8, 8, 8, 8]
+  },
+  "terrainMass": {
+    "neutral-wall": 25,
+    "neutral-gate": 16,
+    "neutral-clump": 10
+  },
+  "growth": {
+    "base": 1,
+    "massFactor": 0.22,
+    "statFactor": 0.015
+  },
+  "ai": {
+    "growBaseWeight": 10,
+    "growMassWeight": 0.35,
+    "growCapRoomWeight": 0.05,
+    "growNearCapPenalty": 12,
+    "growOpenNeighborBonusAt6": 3.5,
+    "growOpenNeighborBonusAt12": 3.5,
+    "growEnemyNearbyLowMassPenalty": 2,
+    "spreadBaseWeight": 8,
+    "spreadMassWeight": 0.12,
+    "spreadEmptyBonus": 3,
+    "spreadFriendlyPenalty": 4,
+    "spreadNeutralPenalty": 1.5,
+    "spreadLowMassPenalty": 2,
+    "spreadLeapBonus": 1,
+    "attackBaseWeight": 2,
+    "attackStatWeight": 0.65,
+    "attackMassWeight": 0.14,
+    "attackLowMassPenaltyBelow12": 4,
+    "attackLowMassPenaltyBelow18": 2,
+    "attackEnemyBonus": 3,
+    "attackNeutralPenalty": 1,
+    "attackShieldBreakerBonus": 2,
+    "attackShieldPenalty": 1,
+    "aggressiveSpreaderBiasBonus": 0.08
+  },
+  "periodicEffects": {
+    "intervalTicks": 10,
+    "sporeBurstDamage": 2,
+    "bulwarkWaveShield": 1
+  }
+}

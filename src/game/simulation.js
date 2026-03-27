@@ -1,9 +1,16 @@
 import { BATTLE_TICK_LIMIT } from './run'
+import { getNodeRank, hasNode } from './tree'
+import balance from './GameBalance.json'
 
-const GRID_SIZE = 8
-const MAX_MASS = 9
+const GRID_SIZE = balance.gridSize
 const PLAYER = 'player'
 const ENEMY = 'enemy'
+const NEUTRAL = 'neutral'
+const SHIELD_CAP_BASE = balance.baseShield
+const CELL_CAP_BASE = balance.baseCellCap
+const SPREAD_COST = balance.spreadCost
+const SPREAD_SPAWN = balance.spreadSpawn
+const ATTACK_COST = balance.attackCost
 
 function createEmptyGrid() {
   return Array.from({ length: GRID_SIZE }, (_, y) =>
@@ -12,8 +19,16 @@ function createEmptyGrid() {
       y,
       owner: null,
       mass: 0,
-      holdTicks: 0,
+      shield: 0,
+      terrain: null,
+      delta: null,
       lastAction: null,
+      pulse: null,
+      capped: false,
+      contested: false,
+      oozeFrom: null,
+      oozeDir: null,
+      attackedThisTick: 0,
     })),
   )
 }
@@ -31,109 +46,188 @@ function getNeighbors(x, y) {
   ].filter(([nx, ny]) => nx >= 0 && ny >= 0 && nx < GRID_SIZE && ny < GRID_SIZE)
 }
 
-function hasNode(entity, nodeId) {
-  return entity?.nodes?.includes(nodeId) || entity?.mutations?.includes(nodeId)
+function getLeapNeighbors(x, y) {
+  return [
+    [x, y - 2],
+    [x + 2, y],
+    [x, y + 2],
+    [x - 2, y],
+  ].filter(([nx, ny]) => nx >= 0 && ny >= 0 && nx < GRID_SIZE && ny < GRID_SIZE)
 }
 
-function getEntityPower(entity, kind) {
-  const stats = entity.stats
-
-  if (kind === 'grow') return 1 + Math.floor(stats.bloom / 4)
-  if (kind === 'expand') return 1 + Math.floor(stats.drift / 4)
-  if (kind === 'attack') return Math.floor(stats.rupture / 2)
-  if (kind === 'defend') return Math.floor(stats.shell / 2)
-  if (kind === 'supportMultiplier') return 1 + Math.floor(stats.synapse / 5)
-
-  return 0
+function getDirection(fromX, fromY, toX, toY) {
+  if (toX > fromX) return 'right'
+  if (toX < fromX) return 'left'
+  if (toY > fromY) return 'down'
+  if (toY < fromY) return 'up'
+  return null
 }
 
-function getEntityByOwner(state, owner) {
-  return owner === PLAYER ? state.player : state.enemy
+function getCellCap(entity) {
+  return CELL_CAP_BASE + (hasNode(entity.nodes, 'cell-cap') ? 10 : 0)
 }
 
-function getSupportBonus(grid, x, y, owner, entity) {
-  const count = getNeighbors(x, y).reduce((sum, [nx, ny]) => sum + (grid[ny][nx].owner === owner ? 1 : 0), 0)
-  const mult = getEntityPower(entity, 'supportMultiplier')
-  let bonus = count * mult
-
-  if (hasNode(entity, 'linked-nodes')) bonus += count
-
-  return bonus
+function getShieldCap(entity) {
+  return SHIELD_CAP_BASE + (hasNode(entity.nodes, 'shield-pool') ? 3 : 0)
 }
 
-function isHomeSide(owner, y) {
-  return owner === PLAYER ? y >= 5 : y <= 2
+function getAttackStat(entity) {
+  const boostRank = getNodeRank(entity.nodes, 'attack-boost')
+  return entity.stats.attack * (1 + boostRank * 0.2)
+}
+
+function getGrowthStat(entity) {
+  const boostRank = getNodeRank(entity.nodes, 'growth-boost')
+  return entity.stats.growth * (1 + boostRank * 0.2)
+}
+
+function getDefenseRank(entity) {
+  return getNodeRank(entity.nodes, 'defense-boost')
 }
 
 function getGrowthGain(cell, entity) {
-  let gain = getEntityPower(entity, 'grow')
-  if (hasNode(entity, 'soft-division')) gain += 1
-  return gain
+  const statGrowth = getGrowthStat(entity)
+  return Math.max(1, Math.floor(balance.growth.base + statGrowth + cell.mass * (balance.growth.massFactor + statGrowth * balance.growth.statFactor)))
 }
 
-function scoreGrowth(cell, entity, grid) {
-  let score = 2 + getGrowthGain(cell, entity) - cell.mass * 0.15
-  const support = getSupportBonus(grid, cell.x, cell.y, cell.owner, entity)
-  score += support * 0.2
-  if (cell.mass >= 8 && hasNode(entity, 'overflow-bloom')) score += 2
-  return score
+function getSpreadBias(entity) {
+  const base = entity.stats.spreadBias / 100
+  return hasNode(entity.nodes, 'aggressive-spreader') ? Math.min(1, base + balance.ai.aggressiveSpreaderBiasBonus) : base
 }
 
-function scoreExpansion(cell, targetCell, entity, grid) {
-  if (cell.mass <= 1) return -999
-
-  const support = getSupportBonus(grid, cell.x, cell.y, cell.owner, entity)
-  let score = 4 + getEntityPower(entity, 'expand') + support * 0.3
-
-  const nearEnemy = getNeighbors(targetCell.x, targetCell.y).some(([nx, ny]) => grid[ny][nx].owner && grid[ny][nx].owner !== cell.owner)
-  if (nearEnemy) score += 1.5
-  if (hasNode(entity, 'frontier-sense')) score += 1.5
-  if (hasNode(entity, 'phase-surge') && entity.stats.drift >= 6) score += 1
-  if (hasNode(entity, 'encircle-instinct') && nearEnemy) score += 2
-
-  return score
+function clearCellFlags(grid) {
+  grid.forEach((row) => row.forEach((cell) => {
+    cell.delta = null
+    cell.lastAction = null
+    cell.pulse = null
+    cell.capped = false
+    cell.contested = false
+    cell.oozeFrom = null
+    cell.oozeDir = null
+    cell.attackedThisTick = 0
+  }))
 }
 
-function scoreFriendlyTransfer(cell, targetCell, entity, grid) {
-  if (cell.mass <= 1 || targetCell.mass >= cell.mass) return -999
-  return 1 + getSupportBonus(grid, targetCell.x, targetCell.y, cell.owner, entity) * 0.4 + (cell.mass - targetCell.mass)
+function applyTerrain(grid, terrain) {
+  if (!terrain?.cells) return
+  terrain.cells.forEach(([x, y]) => {
+    grid[y][x] = {
+      ...grid[y][x],
+      owner: NEUTRAL,
+      terrain: terrain.kind,
+      mass: balance.terrainMass[terrain.kind] ?? 10,
+      shield: 0,
+    }
+  })
 }
 
-function scoreAttack(cell, targetCell, entity, defenderEntity, grid) {
-  if (cell.mass <= 1) return -999
+function seedGrid(grid, encounter) {
+  balance.playerStartCells.forEach(({ x, y, mass, shield }) => {
+    grid[y][x] = { ...grid[y][x], owner: PLAYER, mass, shield }
+  })
+  applyTerrain(grid, encounter.terrain)
 
-  const attackSupport = getSupportBonus(grid, cell.x, cell.y, cell.owner, entity)
-  const defenseSupport = getSupportBonus(grid, targetCell.x, targetCell.y, targetCell.owner, defenderEntity)
-  const committedMass = Math.max(1, cell.mass - 1)
-  let attackForce = committedMass * 2 + getEntityPower(entity, 'attack') + attackSupport
-  let defenseForce = targetCell.mass + getEntityPower(defenderEntity, 'defend') + defenseSupport
+  if (!encounter.enemy) return
 
-  if (hasNode(entity, 'weakpoint-probe')) {
-    const enemyNeighbors = getNeighbors(targetCell.x, targetCell.y).reduce((sum, [nx, ny]) => sum + (grid[ny][nx].owner === targetCell.owner ? 1 : 0), 0)
-    if (enemyNeighbors <= 1) attackForce += 2
+  const pattern = encounter.enemy.seedPattern
+  if (pattern === 'tiny-cluster') {
+    const [m1] = balance.enemySeedMass.tinyCluster
+    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: m1, shield: SHIELD_CAP_BASE }
+  } else if (pattern === 'diagonal-pair') {
+    const [m1, m2] = balance.enemySeedMass.diagonalPair
+    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: m1, shield: SHIELD_CAP_BASE }
+    grid[2][4] = { ...grid[2][4], owner: ENEMY, mass: m2, shield: SHIELD_CAP_BASE }
+  } else if (pattern === 'heavy-core') {
+    const [m1, m2] = balance.enemySeedMass.heavyCore
+    grid[1][4] = { ...grid[1][4], owner: ENEMY, mass: m1, shield: SHIELD_CAP_BASE }
+    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: m2, shield: SHIELD_CAP_BASE }
+  } else if (pattern === 'wide-line') {
+    const [m1, m2, m3] = balance.enemySeedMass.wideLine
+    grid[1][4] = { ...grid[1][4], owner: ENEMY, mass: m1, shield: SHIELD_CAP_BASE }
+    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: m2, shield: SHIELD_CAP_BASE }
+    grid[2][5] = { ...grid[2][5], owner: ENEMY, mass: m3, shield: SHIELD_CAP_BASE }
+  } else if (pattern === 'double-line') {
+    const [m1, m2, m3, m4] = balance.enemySeedMass.doubleLine
+    grid[1][4] = { ...grid[1][4], owner: ENEMY, mass: m1, shield: SHIELD_CAP_BASE }
+    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: m2, shield: SHIELD_CAP_BASE }
+    grid[2][4] = { ...grid[2][4], owner: ENEMY, mass: m3, shield: SHIELD_CAP_BASE }
+    grid[2][5] = { ...grid[2][5], owner: ENEMY, mass: m4, shield: SHIELD_CAP_BASE }
   }
+}
 
-  return 6 + attackForce - defenseForce
+function countOpenNeighbors(grid, cell) {
+  return getNeighbors(cell.x, cell.y).reduce((sum, [nx, ny]) => sum + (grid[ny][nx].owner ? 0 : 1), 0)
+}
+
+function countEnemyNeighbors(grid, cell) {
+  return getNeighbors(cell.x, cell.y).reduce((sum, [nx, ny]) => {
+    const owner = grid[ny][nx].owner
+    return sum + (owner && owner !== cell.owner && owner !== NEUTRAL ? 1 : 0)
+  }, 0)
+}
+
+function scoreGrow(cell, entity, grid) {
+  const cap = getCellCap(entity)
+  const spreadBias = getSpreadBias(entity)
+  const openNeighbors = countOpenNeighbors(grid, cell)
+  const enemyNeighbors = countEnemyNeighbors(grid, cell)
+  let score = (1 - spreadBias) * balance.ai.growBaseWeight + cell.mass * balance.ai.growMassWeight + (cap - cell.mass) * balance.ai.growCapRoomWeight
+
+  if (cell.mass >= cap) score -= balance.ai.growNearCapPenalty
+  if (cell.mass >= 6 && openNeighbors > 0) score += balance.ai.growOpenNeighborBonusAt6
+  if (cell.mass >= 12 && openNeighbors > 0) score += balance.ai.growOpenNeighborBonusAt12
+  if (enemyNeighbors > 0 && cell.mass < 12) score -= balance.ai.growEnemyNearbyLowMassPenalty
+
+  return score
+}
+
+function scoreSpread(sourceCell, targetCell, entity, isLeap = false) {
+  if (sourceCell.mass < SPREAD_COST + SPREAD_SPAWN) return -999
+
+  const spreadBias = getSpreadBias(entity)
+  let score = spreadBias * balance.ai.spreadBaseWeight + sourceCell.mass * balance.ai.spreadMassWeight
+
+  if (!targetCell.owner) score += balance.ai.spreadEmptyBonus
+  if (targetCell.owner === sourceCell.owner) score -= balance.ai.spreadFriendlyPenalty
+  if (targetCell.owner === NEUTRAL) score -= balance.ai.spreadNeutralPenalty
+  if (sourceCell.mass < 10) score -= balance.ai.spreadLowMassPenalty
+  if (isLeap) score += balance.ai.spreadLeapBonus
+
+  return score
+}
+
+function scoreAttack(sourceCell, targetCell, entity) {
+  if (sourceCell.mass <= ATTACK_COST) return -999
+
+  let score = balance.ai.attackBaseWeight + getAttackStat(entity) * balance.ai.attackStatWeight + sourceCell.mass * balance.ai.attackMassWeight
+  if (sourceCell.mass < 12) score -= balance.ai.attackLowMassPenaltyBelow12
+  if (sourceCell.mass < 18) score -= balance.ai.attackLowMassPenaltyBelow18
+  if (targetCell.owner === NEUTRAL) score -= balance.ai.attackNeutralPenalty
+  if (targetCell.owner && targetCell.owner !== sourceCell.owner) score += balance.ai.attackEnemyBonus
+  if (targetCell.shield > 0) score += hasNode(entity.nodes, 'shield-breaker') ? balance.ai.attackShieldBreakerBonus : -balance.ai.attackShieldPenalty
+  return score
 }
 
 function chooseAction(state, cell) {
-  const entity = getEntityByOwner(state, cell.owner)
-  const grid = state.grid
-  const actions = [{ type: 'grow', score: scoreGrowth(cell, entity, grid) }]
+  const entity = cell.owner === PLAYER ? state.player : state.enemy
+  const actions = [{ type: 'grow', score: scoreGrow(cell, entity, state.grid) }]
 
-  for (const [x, y] of getNeighbors(cell.x, cell.y)) {
-    const targetCell = grid[y][x]
+  for (const [nx, ny] of getNeighbors(cell.x, cell.y)) {
+    const target = state.grid[ny][nx]
+    if (!target.owner || target.owner === cell.owner || target.owner === NEUTRAL) {
+      actions.push({ type: 'spread', target: { x: nx, y: ny }, leap: false, score: scoreSpread(cell, target, entity, false) })
+    }
+    if (target.owner && target.owner !== cell.owner && target.owner !== NEUTRAL) {
+      actions.push({ type: 'attack', target: { x: nx, y: ny }, score: scoreAttack(cell, target, entity) })
+    }
+  }
 
-    if (!targetCell.owner) {
-      actions.push({ type: 'expand', target: { x, y }, score: scoreExpansion(cell, targetCell, entity, grid) })
-    } else if (targetCell.owner === cell.owner) {
-      actions.push({ type: 'reinforce', target: { x, y }, score: scoreFriendlyTransfer(cell, targetCell, entity, grid) })
-    } else {
-      actions.push({
-        type: 'attack',
-        target: { x, y },
-        score: scoreAttack(cell, targetCell, entity, getEntityByOwner(state, targetCell.owner), grid),
-      })
+  if (hasNode(entity.nodes, 'leap-spread')) {
+    for (const [nx, ny] of getLeapNeighbors(cell.x, cell.y)) {
+      const target = state.grid[ny][nx]
+      if (!target.owner || target.owner === NEUTRAL) {
+        actions.push({ type: 'spread', target: { x: nx, y: ny }, leap: true, score: scoreSpread(cell, target, entity, true) })
+      }
     }
   }
 
@@ -141,197 +235,270 @@ function chooseAction(state, cell) {
   return actions[0]
 }
 
-function applyOverflowBloom(grid, cell, entity) {
-  if (!hasNode(entity, 'overflow-bloom')) return
-  if (cell.mass < MAX_MASS) return
+function gainShield(cell, entity) {
+  const gain = getDefenseRank(entity)
+  if (gain <= 0) return
+  const before = cell.shield
+  cell.shield = Math.min(getShieldCap(entity), cell.shield + gain)
+  if (cell.shield > before) {
+    cell.delta = { text: `+${cell.shield - before}`, kind: 'shield', owner: cell.owner, dir: 'up', jitter: (cell.x + cell.y) % 3 }
+  }
+}
 
-  const allies = getNeighbors(cell.x, cell.y)
-    .map(([x, y]) => grid[y][x])
-    .filter((neighbor) => neighbor.owner === cell.owner && neighbor.mass < MAX_MASS)
-    .sort((a, b) => a.mass - b.mass)
+function applySpillover(grid, cell, entity) {
+  if (!hasNode(entity.nodes, 'spillover')) return
 
-  if (allies[0]) {
-    allies[0].mass += 1
-    allies[0].lastAction = 'fed'
+  for (const [nx, ny] of getNeighbors(cell.x, cell.y)) {
+    const neighbor = grid[ny][nx]
+    if (neighbor.owner === cell.owner) {
+      const cap = getCellCap(entity)
+      const before = neighbor.mass
+      neighbor.mass = Math.min(cap, neighbor.mass + 1)
+      if (neighbor.mass > before) {
+        neighbor.delta = { text: '+1', kind: 'grow', owner: neighbor.owner, dir: getDirection(cell.x, cell.y, neighbor.x, neighbor.y), jitter: (neighbor.x + neighbor.y) % 3 }
+      }
+      neighbor.pulse = 'grow'
+    }
   }
 }
 
 function applyGrowth(grid, cell, entity) {
-  cell.mass = Math.min(MAX_MASS, cell.mass + getGrowthGain(cell, entity))
+  const cap = getCellCap(entity)
+  const gain = getGrowthGain(cell, entity)
+  const before = cell.mass
+  const uncappedMass = cell.mass + gain
+  const nextMass = Math.min(cap, uncappedMass)
+  cell.capped = uncappedMass > cap
+  cell.mass = nextMass
   cell.lastAction = 'grow'
-  applyOverflowBloom(grid, cell, entity)
+  cell.pulse = 'grow'
+  if (cell.mass > before) {
+    cell.delta = { text: `+${cell.mass - before}`, kind: 'grow', owner: cell.owner, dir: 'up', jitter: (cell.x * 7 + cell.y) % 3 }
+  }
+  gainShield(cell, entity)
+
+  if (cell.capped) applySpillover(grid, cell, entity)
 }
 
-function applyFriendlyTransfer(sourceCell, targetCell) {
-  sourceCell.mass -= 1
-  targetCell.mass = Math.min(MAX_MASS, targetCell.mass + 1)
-  sourceCell.lastAction = 'reinforce'
-  targetCell.lastAction = 'receive'
+function runPeriodicEffects(state) {
+  if (state.tick === 0 || state.tick % balance.periodicEffects.intervalTicks !== 0) return
+
+  ;[[PLAYER, state.player], [ENEMY, state.enemy]].forEach(([owner, entity]) => {
+    if (!entity) return
+
+    if (hasNode(entity.nodes, 'spore-burst')) {
+      const enemyOwner = owner === PLAYER ? ENEMY : PLAYER
+      const targets = state.grid.flat().filter((cell) => cell.owner === enemyOwner).sort((a, b) => b.mass - a.mass)
+      const center = targets[0]
+      if (center) {
+        ;[[center.x, center.y], ...getNeighbors(center.x, center.y)].forEach(([x, y]) => {
+          const cell = state.grid[y][x]
+          if (cell.owner === enemyOwner) {
+            cell.mass = Math.max(0, cell.mass - balance.periodicEffects.sporeBurstDamage)
+            cell.delta = { text: `-${balance.periodicEffects.sporeBurstDamage}`, kind: 'damage', owner: enemyOwner, dir: 'up', jitter: (x + y) % 3 }
+            cell.pulse = 'attack'
+            if (cell.mass <= 0) {
+              cell.owner = null
+              cell.mass = 0
+              cell.shield = 0
+              cell.terrain = null
+            }
+          }
+        })
+      }
+    }
+
+    if (hasNode(entity.nodes, 'bulwark-wave')) {
+      state.grid.flat().forEach((cell) => {
+        if (cell.owner === owner) {
+          for (const [nx, ny] of getNeighbors(cell.x, cell.y)) {
+            const neighbor = state.grid[ny][nx]
+            if (neighbor.owner === owner) {
+              const before = neighbor.shield
+              neighbor.shield = Math.min(getShieldCap(entity), neighbor.shield + balance.periodicEffects.bulwarkWaveShield)
+              if (neighbor.shield > before) {
+                neighbor.delta = { text: `+${balance.periodicEffects.bulwarkWaveShield}`, kind: 'shield', owner, dir: getDirection(cell.x, cell.y, neighbor.x, neighbor.y), jitter: (nx + ny) % 3 }
+              }
+            }
+          }
+        }
+      })
+    }
+  })
 }
 
-function getExpansionCost(sourceCell, entity) {
-  let cost = 1 + Math.floor(getEntityPower(entity, 'expand') / 2)
-  if (hasNode(entity, 'slide-membrane') && sourceCell.mass <= 4) cost -= 1
-  if (hasNode(entity, 'nutrient-hold') && sourceCell.mass >= 6) cost -= 1
-  return Math.max(1, cost)
+function resolveCapture(targetCell, newOwner, resultingMass, dir, jitter) {
+  targetCell.owner = newOwner
+  targetCell.mass = Math.max(0, resultingMass)
+  targetCell.shield = SHIELD_CAP_BASE
+  targetCell.terrain = null
+  targetCell.lastAction = 'capture'
+  targetCell.pulse = 'swing'
+  targetCell.delta = { text: `+${targetCell.mass}`, kind: 'grow', owner: newOwner, dir, jitter }
 }
 
-function getSpawnMass(sourceCell, entity, nearEnemy) {
-  let mass = 1 + Math.floor(entity.stats.drift / 4)
-  if (hasNode(entity, 'empty-lure') && nearEnemy) mass += 1
-  if (hasNode(entity, 'fractal-splitting') && sourceCell.mass >= 6) mass += 1
-  if (hasNode(entity, 'fresh-spawn')) mass += 1
-  if (hasNode(entity, 'encircle-instinct') && nearEnemy) mass += 1
-  return Math.min(MAX_MASS, mass)
-}
+function applySpread(state, sourceCell, targetCell, leap = false) {
+  const attacker = sourceCell.owner === PLAYER ? state.player : state.enemy
+  const leaveBehind = leap ? SPREAD_COST + 1 : SPREAD_COST
 
-function applyExpansion(grid, sourceCell, targetCell, entity) {
-  const nearEnemy = getNeighbors(targetCell.x, targetCell.y).some(([nx, ny]) => grid[ny][nx].owner && grid[ny][nx].owner !== sourceCell.owner)
-  const cost = getExpansionCost(sourceCell, entity)
-  const spawnMass = getSpawnMass(sourceCell, entity, nearEnemy)
-
-  if (sourceCell.mass - cost < 1) {
+  if (sourceCell.mass < leaveBehind + SPREAD_SPAWN) {
     sourceCell.lastAction = 'hold'
+    gainShield(sourceCell, attacker)
     return
   }
 
-  sourceCell.mass -= cost
-  targetCell.owner = sourceCell.owner
-  targetCell.mass = Math.min(MAX_MASS, spawnMass)
-  targetCell.holdTicks = 0
-  sourceCell.lastAction = 'expand'
-  targetCell.lastAction = 'spawn'
-}
+  const before = sourceCell.mass
+  sourceCell.mass = Math.max(0, sourceCell.mass - (SPREAD_COST + SPREAD_SPAWN))
+  sourceCell.lastAction = leap ? 'leap' : 'spread'
+  sourceCell.pulse = 'spread'
+  sourceCell.delta = { text: `-${SPREAD_COST + SPREAD_SPAWN}`, kind: 'damage', owner: sourceCell.owner, dir: getDirection(sourceCell.x, sourceCell.y, targetCell.x, targetCell.y), jitter: (sourceCell.x + sourceCell.y) % 3 }
+  targetCell.oozeFrom = `${sourceCell.x},${sourceCell.y}`
+  targetCell.oozeDir = getDirection(sourceCell.x, sourceCell.y, targetCell.x, targetCell.y)
 
-function applyBreaklinePulse(grid, targetCell, newOwner) {
-  for (const [nx, ny] of getNeighbors(targetCell.x, targetCell.y)) {
-    const neighbor = grid[ny][nx]
-    if (neighbor.owner && neighbor.owner !== newOwner) {
-      neighbor.mass = Math.max(1, neighbor.mass - 1)
-      neighbor.lastAction = 'pulse'
+  if (sourceCell.mass <= 0) {
+    sourceCell.owner = null
+    sourceCell.mass = 0
+    sourceCell.shield = 0
+  } else if (before > sourceCell.mass) {
+    sourceCell.shield = Math.max(0, sourceCell.shield - 1)
+  }
+
+  if (!targetCell.owner) {
+    targetCell.owner = attacker.owner
+    targetCell.mass = SPREAD_SPAWN
+    targetCell.shield = SHIELD_CAP_BASE
+    targetCell.lastAction = leap ? 'leap' : 'spread'
+    targetCell.pulse = 'spread'
+    targetCell.delta = { text: '+1', kind: 'grow', owner: targetCell.owner, dir: targetCell.oozeDir, jitter: (targetCell.x + targetCell.y) % 3 }
+    return
+  }
+
+  if (targetCell.owner === attacker.owner) {
+    const cap = getCellCap(attacker)
+    const oldMass = targetCell.mass
+    targetCell.mass = Math.min(cap, targetCell.mass + SPREAD_SPAWN)
+    targetCell.lastAction = 'feed'
+    targetCell.pulse = 'spread'
+    if (targetCell.mass > oldMass) {
+      targetCell.delta = { text: '+1', kind: 'grow', owner: targetCell.owner, dir: targetCell.oozeDir, jitter: (targetCell.x + targetCell.y) % 3 }
+    }
+    return
+  }
+
+  if (targetCell.owner === NEUTRAL) {
+    targetCell.contested = true
+    targetCell.mass = Math.max(0, targetCell.mass - SPREAD_SPAWN)
+    targetCell.delta = { text: '-1', kind: 'damage', owner: NEUTRAL, dir: targetCell.oozeDir, jitter: (targetCell.x + targetCell.y) % 3 }
+    targetCell.pulse = 'attack'
+    if (targetCell.mass <= 0) {
+      resolveCapture(targetCell, attacker.owner, 1, targetCell.oozeDir, (targetCell.x + targetCell.y) % 3)
     }
   }
 }
 
 function applyAttack(state, sourceCell, targetCell) {
-  const attacker = getEntityByOwner(state, sourceCell.owner)
-  const defender = getEntityByOwner(state, targetCell.owner)
-  const attackSupport = getSupportBonus(state.grid, sourceCell.x, sourceCell.y, sourceCell.owner, attacker)
-  const defenseSupport = getSupportBonus(state.grid, targetCell.x, targetCell.y, targetCell.owner, defender)
-  const committedMass = Math.max(1, sourceCell.mass - 1)
-
-  let attackForce = committedMass * 2 + getEntityPower(attacker, 'attack') + attackSupport
-  let defenseForce = targetCell.mass + getEntityPower(defender, 'defend') + defenseSupport
-
-  if (hasNode(attacker, 'weakpoint-probe')) {
-    const enemyNeighbors = getNeighbors(targetCell.x, targetCell.y).reduce((sum, [nx, ny]) => sum + (state.grid[ny][nx].owner === targetCell.owner ? 1 : 0), 0)
-    if (enemyNeighbors <= 1) attackForce += 2
+  const attacker = sourceCell.owner === PLAYER ? state.player : state.enemy
+  const defender = targetCell.owner === PLAYER ? state.player : targetCell.owner === ENEMY ? state.enemy : null
+  if (sourceCell.mass <= ATTACK_COST) {
+    sourceCell.lastAction = 'hold'
+    gainShield(sourceCell, attacker)
+    return
   }
 
-  if (hasNode(attacker, 'piercing-lash') && sourceCell.mass >= 6) attackForce += 2
-  if (hasNode(defender, 'reinforced-membrane')) defenseForce += 1
-  if (hasNode(defender, 'braced-core') && isHomeSide(targetCell.owner, targetCell.y)) defenseForce += 2
-  if (hasNode(defender, 'static-carapace')) defenseForce += Math.min(3, targetCell.holdTicks)
-
-  sourceCell.mass = Math.max(1, sourceCell.mass - committedMass)
+  const committed = Math.max(0, sourceCell.mass - ATTACK_COST)
+  sourceCell.mass = 0
+  sourceCell.owner = null
+  sourceCell.shield = 0
   sourceCell.lastAction = 'attack'
+  sourceCell.pulse = 'attack'
+  sourceCell.delta = { text: `-${committed}`, kind: 'damage', owner: attacker.owner, dir: getDirection(sourceCell.x, sourceCell.y, targetCell.x, targetCell.y), jitter: (sourceCell.x + sourceCell.y) % 3 }
 
-  if (attackForce > defenseForce) {
-    let remaining = attackForce - defenseForce
-    if (hasNode(attacker, 'predator-spines')) remaining += 1
-    if (hasNode(attacker, 'cascade-kill')) remaining += 1
+  targetCell.oozeFrom = `${sourceCell.x},${sourceCell.y}`
+  targetCell.oozeDir = getDirection(sourceCell.x, sourceCell.y, targetCell.x, targetCell.y)
+  targetCell.contested = true
+  targetCell.attackedThisTick += 1
+  targetCell.pulse = 'contest'
 
-    targetCell.owner = sourceCell.owner
-    targetCell.mass = Math.min(MAX_MASS, Math.max(1, remaining))
-    targetCell.holdTicks = 0
-    targetCell.lastAction = 'captured'
+  let attackDamage = committed + Math.floor(getAttackStat(attacker))
+  if (hasNode(attacker.nodes, 'focus-fire')) attackDamage += (targetCell.attackedThisTick - 1) * 2
 
-    if (hasNode(attacker, 'breakline-pulse')) {
-      applyBreaklinePulse(state.grid, targetCell, sourceCell.owner)
+  if (targetCell.owner === NEUTRAL) {
+    const neutralReturn = targetCell.mass
+    const attackerRemaining = Math.max(0, attackDamage - neutralReturn)
+    targetCell.mass = Math.max(0, targetCell.mass - attackDamage)
+    targetCell.delta = { text: `-${Math.min(attackDamage, neutralReturn)}`, kind: 'damage', owner: NEUTRAL, dir: targetCell.oozeDir, jitter: (targetCell.x + targetCell.y) % 3 }
+    if (targetCell.mass <= 0 && attackerRemaining > 0) {
+      resolveCapture(targetCell, attacker.owner, attackerRemaining, targetCell.oozeDir, (targetCell.x + targetCell.y) % 3)
     }
     return
   }
 
-  const retained = Math.max(1, defenseForce - attackForce)
-  targetCell.mass = Math.min(MAX_MASS, retained + (hasNode(defender, 'elastic-wall') ? 1 : 0))
-  targetCell.lastAction = 'defend'
+  const defenderBaseShield = SHIELD_CAP_BASE + targetCell.shield
+  const shieldBreak = hasNode(attacker.nodes, 'shield-breaker') ? 2 : 0
+  const effectiveShield = Math.max(0, defenderBaseShield - shieldBreak)
+  const defenderDamage = targetCell.mass
+
+  const totalDefense = effectiveShield + defenderDamage
+  const attackerRemaining = Math.max(0, attackDamage - totalDefense)
+  const defenderRemaining = Math.max(0, defenderDamage - attackDamage)
+
+  targetCell.delta = { text: `-${Math.min(attackDamage, defenderDamage + effectiveShield)}`, kind: 'damage', owner: targetCell.owner, dir: targetCell.oozeDir, jitter: (targetCell.x + targetCell.y) % 3 }
+
+  if (attackerRemaining > 0) {
+    resolveCapture(targetCell, attacker.owner, attackerRemaining, targetCell.oozeDir, (targetCell.x + targetCell.y) % 3)
+  } else {
+    targetCell.mass = defenderRemaining
+    targetCell.shield = SHIELD_CAP_BASE
+    targetCell.lastAction = 'hold'
+    targetCell.pulse = 'attack'
+    if (targetCell.mass <= 0) {
+      targetCell.owner = null
+      targetCell.mass = 0
+      targetCell.shield = 0
+    }
+  }
+
+  if (defender && hasNode(defender.nodes, 'thorns') && attackerRemaining === 0) {
+    targetCell.shield = Math.min(getShieldCap(defender), targetCell.shield + 1)
+  }
 }
 
 function runSingleTick(previous) {
   const grid = cloneGrid(previous.grid)
+  clearCellFlags(grid)
   const state = { ...previous, grid }
 
-  grid.forEach((row) => {
-    row.forEach((cell) => {
-      cell.lastAction = null
-      cell.holdTicks = cell.owner ? cell.holdTicks + 1 : 0
-    })
-  })
+  runPeriodicEffects(state)
 
   const actors = []
-  grid.forEach((row) => {
-    row.forEach((cell) => {
-      if (cell.owner && cell.mass > 0) actors.push({ x: cell.x, y: cell.y, mass: cell.mass })
-    })
-  })
+  grid.forEach((row) => row.forEach((cell) => {
+    if ((cell.owner === PLAYER || cell.owner === ENEMY) && cell.mass > 0) actors.push({ x: cell.x, y: cell.y, mass: cell.mass })
+  }))
 
   actors.sort((a, b) => b.mass - a.mass)
 
   for (const actor of actors) {
-    const liveCell = grid[actor.y][actor.x]
-    if (!liveCell.owner || liveCell.mass <= 0) continue
+    const cell = grid[actor.y][actor.x]
+    if (!(cell.owner === PLAYER || cell.owner === ENEMY) || cell.mass <= 0) continue
 
-    const action = chooseAction(state, liveCell)
-
+    const action = chooseAction(state, cell)
     if (action.type === 'grow') {
-      applyGrowth(grid, liveCell, getEntityByOwner(state, liveCell.owner))
-      continue
+      applyGrowth(grid, cell, cell.owner === PLAYER ? state.player : state.enemy)
+    } else if (action.type === 'attack') {
+      const targetCell = grid[action.target.y][action.target.x]
+      applyAttack(state, cell, targetCell)
+    } else {
+      const targetCell = grid[action.target.y][action.target.x]
+      applySpread(state, cell, targetCell, action.leap)
     }
-
-    const targetCell = grid[action.target.y][action.target.x]
-    if (action.type === 'expand') {
-      applyExpansion(grid, liveCell, targetCell, getEntityByOwner(state, liveCell.owner))
-      continue
-    }
-
-    if (action.type === 'reinforce') {
-      applyFriendlyTransfer(liveCell, targetCell)
-      continue
-    }
-
-    applyAttack(state, liveCell, targetCell)
   }
 
   return { ...state, tick: previous.tick + 1 }
 }
 
-function seedGrid(grid, encounter) {
-  grid[6][1] = { ...grid[6][1], owner: PLAYER, mass: 5 }
-  grid[6][2] = { ...grid[6][2], owner: PLAYER, mass: 3 }
-
-  if (!encounter.enemy) return
-
-  const pattern = encounter.enemy.seedPattern
-  if (pattern === 'corner-cluster') {
-    grid[1][6] = { ...grid[1][6], owner: ENEMY, mass: 4 }
-    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: 2 }
-  } else if (pattern === 'center-mass') {
-    grid[2][5] = { ...grid[2][5], owner: ENEMY, mass: 6 }
-    grid[2][6] = { ...grid[2][6], owner: ENEMY, mass: 4 }
-  } else if (pattern === 'diagonal-pair') {
-    grid[1][6] = { ...grid[1][6], owner: ENEMY, mass: 4 }
-    grid[2][5] = { ...grid[2][5], owner: ENEMY, mass: 4 }
-  } else if (pattern === 'double-wall') {
-    grid[1][5] = { ...grid[1][5], owner: ENEMY, mass: 4 }
-    grid[1][6] = { ...grid[1][6], owner: ENEMY, mass: 4 }
-    grid[2][5] = { ...grid[2][5], owner: ENEMY, mass: 3 }
-    grid[2][6] = { ...grid[2][6], owner: ENEMY, mass: 3 }
-  }
-}
-
 export function createSimulationState({ draft, encounter, tick }) {
-  const player = { label: 'Your Strain', stats: draft.stats, nodes: draft.nodes }
-  const enemy = encounter.enemy ? { label: encounter.enemy.label, stats: encounter.enemy.stats, nodes: encounter.enemy.mutations } : null
+  const player = { owner: PLAYER, label: 'Your Slime', stats: draft.stats, nodes: draft.nodes }
+  const enemy = encounter.enemy ? { owner: ENEMY, label: encounter.enemy.label, stats: encounter.enemy.stats, nodes: encounter.enemy.nodes } : null
 
   const grid = createEmptyGrid()
   seedGrid(grid, encounter)
@@ -347,59 +514,56 @@ export function summarizeState(state) {
     enemyCells: 0,
     playerMass: 0,
     enemyMass: 0,
+    playerShield: 0,
+    enemyShield: 0,
     finished: false,
     timeout: false,
     winner: null,
     maxTicks: BATTLE_TICK_LIMIT,
   }
 
-  state.grid.forEach((row) => {
-    row.forEach((cell) => {
-      if (cell.owner === PLAYER) {
-        summary.playerCells += 1
-        summary.playerMass += cell.mass
-      } else if (cell.owner === ENEMY) {
-        summary.enemyCells += 1
-        summary.enemyMass += cell.mass
-      }
-    })
-  })
+  state.grid.forEach((row) => row.forEach((cell) => {
+    if (cell.owner === PLAYER) {
+      summary.playerCells += 1
+      summary.playerMass += cell.mass
+      summary.playerShield += cell.shield
+    } else if (cell.owner === ENEMY) {
+      summary.enemyCells += 1
+      summary.enemyMass += cell.mass
+      summary.enemyShield += cell.shield
+    }
+  }))
 
-  const playerScore = summary.playerCells * 2 + summary.playerMass
-  const enemyScore = summary.enemyCells * 2 + summary.enemyMass
-  summary.playerScore = playerScore
-  summary.enemyScore = enemyScore
+  summary.playerScore = summary.playerCells * 3 + summary.playerMass + summary.playerShield
+  summary.enemyScore = summary.enemyCells * 3 + summary.enemyMass + summary.enemyShield
 
   if (!state.enemy) {
-    summary.verdict = 'Workshop preview'
+    summary.verdict = 'Preview'
     return summary
   }
 
   if (summary.enemyCells === 0) {
-    summary.verdict = 'Player victory'
     summary.finished = true
     summary.winner = PLAYER
+    summary.verdict = 'Player victory'
     return summary
   }
 
   if (summary.playerCells === 0) {
-    summary.verdict = 'Enemy victory'
     summary.finished = true
     summary.winner = ENEMY
+    summary.verdict = 'Enemy victory'
     return summary
   }
 
   if (state.tick >= BATTLE_TICK_LIMIT) {
     summary.finished = true
     summary.timeout = true
-    summary.winner = playerScore > enemyScore ? PLAYER : ENEMY
-    summary.verdict = summary.winner === PLAYER ? 'Player wins on control' : 'Enemy wins on control'
+    summary.winner = summary.playerScore >= summary.enemyScore ? PLAYER : ENEMY
+    summary.verdict = summary.winner === PLAYER ? 'Player control' : 'Enemy control'
     return summary
   }
 
-  if (playerScore > enemyScore) summary.verdict = 'Player pressure'
-  else if (playerScore < enemyScore) summary.verdict = 'Enemy pressure'
-  else summary.verdict = 'Even pressure'
-
+  summary.verdict = summary.playerScore > summary.enemyScore ? 'Player pressure' : summary.playerScore < summary.enemyScore ? 'Enemy pressure' : 'Even'
   return summary
 }
