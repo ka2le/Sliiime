@@ -21,3 +21,13 @@
 - Changed expansion to consume created mass from the source cell
 - Reworked combat so attacks hit hard and winning attacks take over the tile
 - Added GitHub Pages deployment config and published the site
+- Refactored the prototype into a guided tutorial-first game flow.
+- Replaced the old panel-heavy shell with a new top-level `GamePrototype.jsx` flow controller while keeping reusable lower-level components.
+- Start of run now gives the player a decent build context and a large first-battle launch prompt.
+- Grid stays centered as the main stage while stats/genome live in popup sheets opened from top-menu icon buttons.
+- Genome is locked at the start and unlocks after 3 wins.
+- Added tutorial/explanation overlays for intro, post-first-battle rebuild, and genome unlock.
+- Added soft stat-reset between wins so the player re-spends stats during the run.
+- Losing a battle now ends the entire run.
+- Added run summary / rerun flow with score, level reached, battles won, largest mass reached, and best board score.
+- Shifted the visual style toward slimey/drippy/asymmetrical UI with bold splashy overlays.

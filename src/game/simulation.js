@@ -173,7 +173,9 @@ function scoreGrow(cell, entity, grid) {
   const enemyNeighbors = countEnemyNeighbors(grid, cell)
   let score = (1 - spreadBias) * balance.ai.growBaseWeight + cell.mass * balance.ai.growMassWeight + (cap - cell.mass) * balance.ai.growCapRoomWeight
 
-  if (cell.mass >= cap) score -= balance.ai.growNearCapPenalty
+  if (cell.mass >= cap) return openNeighbors > 0 ? -999 : score - balance.ai.growNearCapPenalty
+  if (cell.mass >= cap - 1 && openNeighbors > 0) score -= balance.ai.growNearCapPenalty * 0.7
+  if (cell.mass >= cap - 3 && openNeighbors > 0) score -= balance.ai.growNearCapPenalty * 0.35
   if (cell.mass >= 6 && openNeighbors > 0) score += balance.ai.growOpenNeighborBonusAt6
   if (cell.mass >= 12 && openNeighbors > 0) score += balance.ai.growOpenNeighborBonusAt12
   if (enemyNeighbors > 0 && cell.mass < 12) score -= balance.ai.growEnemyNearbyLowMassPenalty
